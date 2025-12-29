@@ -1,0 +1,9 @@
+success.csv
+underlying_keys.txt
+companies.txt
+.env
+__pycache__
+companies_only.csv
+available_to_trade.csv
+available_to_trade.pkl
+incoming_data_demo.txt

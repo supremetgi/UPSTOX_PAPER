@@ -6,6 +6,7 @@ import os
 
 load_dotenv()
 TOKEN = os.getenv("token")
+print("df")
 
 HEADERS = {
     "Authorization": f"Bearer {TOKEN}",

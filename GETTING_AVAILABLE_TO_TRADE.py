@@ -94,6 +94,8 @@ df_out = df_out[
 
 
 df_out.to_pickle("available_to_trade.pkl")
+df_out.to_csv("available_to_trade.csv")
+
 
 
 
