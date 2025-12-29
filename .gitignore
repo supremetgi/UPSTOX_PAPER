@@ -1,3 +1,5 @@
+# LibreOffice lock files
+.~lock.*#
 success.csv
 underlying_keys.txt
 companies.txt
