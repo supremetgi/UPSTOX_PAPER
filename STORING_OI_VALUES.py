@@ -5,10 +5,26 @@ import ssl
 import websockets
 import requests
 from google.protobuf.json_format import MessageToDict
-
+import pandas as pd
 import MarketDataFeedV3_pb2 as pb
 from dotenv import load_dotenv
 import os
+
+
+df_instruments = pd.read_csv("atm_option_table.csv")
+cols = [
+    "underlying_key",
+    "atm_plus_2_ce_instrument",
+    "atm_minus_2_pe_instrument"
+]
+
+
+instrument_keys = set()
+
+for col in cols:
+    instrument_keys.update(df_instruments[col].dropna().astype(str))
+
+instrument_keys = list(instrument_keys)
 
 load_dotenv()
 ACCESS_TOKEN = os.getenv("token")
@@ -51,10 +67,10 @@ async def fetch_market_data():
             "method": "sub",
             "data": {
                 "mode": "option_greeks",
-                "instrumentKeys": ["NSE_EQ|INE584A01023","NSE_FO|122207","NSE_FO|122204"]
+                "instrumentKeys": instrument_keys
             }
         }
-#THIS IS FOR AMBUJA CEMENT
+
        
         binary_data = json.dumps(data).encode('utf-8')
         await websocket.send(binary_data)
