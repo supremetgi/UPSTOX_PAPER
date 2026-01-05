@@ -1,188 +1,149 @@
 import asyncio
-import json
-import ssl
-import os
-import bisect
-import time
-import requests
-import websockets
+import aiohttp
+import async_timeout
 import pandas as pd
-from collections import defaultdict
+import numpy as np
+import time
 from dotenv import load_dotenv
-from google.protobuf.json_format import MessageToDict
-import MarketDataFeedV3_pb2 as pb
+import os
 
-# =========================================================
-# 1️⃣ ENV SETUP
-# =========================================================
+# ===============================
+# ENV
+# ===============================
 load_dotenv()
-ACCESS_TOKEN = os.getenv("token")
+TOKEN = os.getenv("token")
 
+HEADERS = {
+    "Authorization": f"Bearer {TOKEN}",
+    "Accept": "application/json",
+    "Content-Type": "application/json"
+}
+
+API_URL = "https://api.upstox.com/v3/market-quote/ltp?instrument_key="
 CSV_PATH = "companies_only.csv"
 
-# =========================================================
-# 2️⃣ LOAD CSV & BUILD FAST LOOKUPS (RUNS ONCE)
-# =========================================================
-def build_maps(csv_path):
-    df = pd.read_csv(csv_path)
+# ===============================
+# RATE LIMIT CONFIG
+# ===============================
+MAX_CONCURRENT_REQUESTS = 10
+# REQUESTS_PER_SECOND = 8
+REQUESTS_PER_SECOND = 40
+RETRY_LIMIT = 6
 
-    df = df[[
-        "underlying_key",
-        "asset_symbol",
-        "strike_price",
-        "ce_instrument_key",
-        "pe_instrument_key"
-    ]].dropna(subset=["strike_price"])
+semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+rate_lock = asyncio.Lock()
+last_request_ts = 0.0
 
-    option_map = defaultdict(list)   # underlying_key → [(strike, ce, pe)]
-    underlying_info = {}             # underlying_key → asset_symbol
+# ===============================
+# HARD RATE LIMITER
+# ===============================
+async def rate_limit():
+    global last_request_ts
+    async with rate_lock:
+        now = time.monotonic()
+        wait = max(0, (1 / REQUESTS_PER_SECOND) - (now - last_request_ts))
+        if wait > 0:
+            await asyncio.sleep(wait)
+        last_request_ts = time.monotonic()
 
-    for row in df.itertuples(index=False):
-        if row.underlying_key not in underlying_info:
-            underlying_info[row.underlying_key] = row.asset_symbol
+# ===============================
+# ASYNC LTP FETCH (DETERMINISTIC)
+# ===============================
+async def fetch_ltp(session, instrument_key):
+    url = API_URL + instrument_key
 
-        option_map[row.underlying_key].append(
-            (float(row.strike_price), row.ce_instrument_key, row.pe_instrument_key)
-        )
+    for attempt in range(RETRY_LIMIT):
+        async with semaphore:
+            await rate_limit()
+            try:
+                async with async_timeout.timeout(5):
+                    async with session.get(url, headers=HEADERS) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            info = next(iter(data["data"].values()))
+                            return instrument_key, info["last_price"]
 
-    # sort strikes ONCE
-    for k in option_map:
-        option_map[k].sort(key=lambda x: x[0])
+                        if resp.status in (429, 500, 502, 503):
+                            await asyncio.sleep(0.4 + attempt * 0.3)
+                            continue
 
-    return option_map, underlying_info
+                        return instrument_key, None
 
+            except asyncio.TimeoutError:
+                await asyncio.sleep(0.3 + attempt * 0.2)
 
-OPTION_MAP, UNDERLYING_INFO = build_maps(CSV_PATH)
-UNDERLYINGS = list(OPTION_MAP.keys())
+    return instrument_key, None
 
-print(f"Loaded {len(UNDERLYINGS)} underlyings")
+async def fetch_all_ltps(keys):
+    async with aiohttp.ClientSession() as session:
+        tasks = [fetch_ltp(session, k) for k in keys]
+        results = await asyncio.gather(*tasks)
 
-# =========================================================
-# 3️⃣ ATM FINDER (BINARY SEARCH + INDEX)
-# =========================================================
-def find_atm_with_index(option_list, spot):
-    strikes = [x[0] for x in option_list]
-    idx = bisect.bisect_left(strikes, spot)
+    return dict(results)
 
-    if idx == 0:
-        return option_list[0], 0
-    if idx == len(strikes):
-        return option_list[-1], len(strikes) - 1
+# ===============================
+# ATM LOGIC (COLUMN STYLE)
+# ===============================
+def build_atm_table(df, ltp_map):
+    rows = []
 
-    before = option_list[idx - 1]
-    after = option_list[idx]
+    for underlying, g in df.groupby("underlying_key"):
+        spot = ltp_map.get(underlying)
 
-    if abs(before[0] - spot) <= abs(after[0] - spot):
-        return before, idx - 1
-    else:
-        return after, idx
+        strikes = np.array(sorted(g["strike_price"].unique()))
+        if spot is None or len(strikes) < 3:
+            rows.append({
+                "name": g.iloc[0]["name"],
+                "underlying_key": underlying,
+                "spot_price": spot,
+                "atm_ce_instrument": None,
+                "atm_plus_2_ce_instrument": None,
+                "atm_minus_2_pe_instrument": None
+            })
+            continue
 
-# =========================================================
-# 4️⃣ RELATIVE STRIKE PICKER (±N ROWS)
-# =========================================================
-def get_relative_strike(option_list, atm_idx, offset):
-    target_idx = atm_idx + offset
-    if 0 <= target_idx < len(option_list):
-        return option_list[target_idx]
-    return None
+        atm_idx = np.abs(strikes - spot).argmin()
 
-# =========================================================
-# 5️⃣ AUTHORIZE WEBSOCKET
-# =========================================================
-def get_market_data_feed_authorize_v3():
-    url = "https://api.upstox.com/v3/feed/market-data-feed/authorize"
-    headers = {
-        "Accept": "application/json",
-        "Authorization": f"Bearer {ACCESS_TOKEN}"
-    }
-    r = requests.get(url, headers=headers)
-    r.raise_for_status()
-    return r.json()
+        def get_ce(idx):
+            if 0 <= idx < len(strikes):
+                r = g[g["strike_price"] == strikes[idx]].iloc[0]
+                return r["ce_instrument_key"] or None
+            return None
 
-# =========================================================
-# 6️⃣ PROTOBUF DECODER
-# =========================================================
-def decode_protobuf(buffer):
-    msg = pb.FeedResponse()
-    msg.ParseFromString(buffer)
-    return msg
+        def get_pe(idx):
+            if 0 <= idx < len(strikes):
+                r = g[g["strike_price"] == strikes[idx]].iloc[0]
+                return r["pe_instrument_key"] or None
+            return None
 
-# =========================================================
-# 7️⃣ MAIN LIVE LOOP
-# =========================================================
-async def fetch_market_data():
-    ssl_context = ssl.create_default_context()
-    ssl_context.check_hostname = False
-    ssl_context.verify_mode = ssl.CERT_NONE
+        rows.append({
+            "name": g.iloc[0]["name"],
+            "underlying_key": underlying,
+            "spot_price": spot,
+            "atm_ce_instrument": get_ce(atm_idx),
+            "atm_plus_2_ce_instrument": get_ce(min(atm_idx + 2, len(strikes) - 1)),
+            "atm_minus_2_pe_instrument": get_pe(max(atm_idx - 2, 0))
+        })
 
-    auth = get_market_data_feed_authorize_v3()
-    ws_url = auth["data"]["authorized_redirect_uri"]
+    return pd.DataFrame(rows)
 
-    async with websockets.connect(ws_url, ssl=ssl_context) as ws:
-        print("WebSocket connected")
+# ===============================
+# MAIN
+# ===============================
+async def main():
+    df = pd.read_csv(CSV_PATH)
+    underlying_keys = df["underlying_key"].unique().tolist()
 
-        sub_msg = {
-            "guid": "atm-relative-feed",
-            "method": "sub",
-            "data": {
-                "mode": "ltpc",
-                "instrumentKeys": UNDERLYINGS
-            }
-        }
+    print(f"Fetching LTPs for {len(underlying_keys)} underlyings (rate-limited)...")
+    ltp_map = await fetch_all_ltps(underlying_keys)
 
-        await ws.send(json.dumps(sub_msg).encode())
-        print("Subscribed to spot LTPs")
+    fetched = sum(v is not None for v in ltp_map.values())
+    print(f"LTP fetched successfully for {fetched}/{len(ltp_map)}")
 
-        last_atm = {}
+    final_df = build_atm_table(df, ltp_map)
 
-        while True:
-            raw = await ws.recv()
-            decoded = decode_protobuf(raw)
-            data = MessageToDict(decoded)
+    final_df.to_csv("atm_option_table.csv", index=False)
+    print("Saved → atm_option_table.csv")
 
-            feeds = data.get("feeds", {})
-
-            for underlying_key, feed in feeds.items():
-                try:
-                    spot = feed["ltpc"]["ltp"]
-                except KeyError:
-                    continue
-
-                if underlying_key not in OPTION_MAP:
-                    continue
-
-                asset = UNDERLYING_INFO[underlying_key]
-
-                (atm_strike, atm_ce, atm_pe), atm_idx = find_atm_with_index(
-                    OPTION_MAP[underlying_key],
-                    spot
-                )
-
-                plus_2 = get_relative_strike(OPTION_MAP[underlying_key], atm_idx, +2)
-                minus_2 = get_relative_strike(OPTION_MAP[underlying_key], atm_idx, -2)
-
-                # Print ONLY when ATM changes
-                if last_atm.get(underlying_key) != atm_strike:
-                    last_atm[underlying_key] = atm_strike
-
-                    print(f"{time.strftime('%H:%M:%S')} | {asset}")
-                    print(f"  Spot      : {spot:.2f}")
-                    print(f"  ATM       : {atm_strike} | CE={atm_ce} | PE={atm_pe}")
-
-                    if plus_2:
-                        print(f"  ATM + 2   : {plus_2[0]} | CE={plus_2[1]} | PE={plus_2[2]}")
-                    else:
-                        print("  ATM + 2   : N/A")
-
-                    if minus_2:
-                        print(f"  ATM - 2   : {minus_2[0]} | CE={minus_2[1]} | PE={minus_2[2]}")
-                    else:
-                        print("  ATM - 2   : N/A")
-
-                    print("-" * 80)
-
-# =========================================================
-# 8️⃣ RUN
-# =========================================================
 if __name__ == "__main__":
-    asyncio.run(fetch_market_data())
+    asyncio.run(main())

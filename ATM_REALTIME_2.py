@@ -1,5 +1,5 @@
 # ==========================================
-# LIVE EQ PRICE + FO OI DASHBOARD (FIXED)
+# LIVE EQ PRICE + FO OI DASHBOARD (STABLE)
 # ==========================================
 
 import sys
@@ -28,9 +28,9 @@ import MarketDataFeedV3_pb2 as pb
 # ==========================================
 # CONFIG
 # ==========================================
-EQ_KEY = "NSE_EQ|INE918Z01012"
-FO_1 = "NSE_FO|48280"
-FO_2 = "NSE_FO|37764"
+EQ_KEY = "NSE_EQ|INE066F01020"
+FO_1 = "NSE_FO|91614"
+FO_2 = "NSE_FO|91611"
 
 load_dotenv()
 ACCESS_TOKEN = os.getenv("token")
@@ -53,7 +53,7 @@ def get_market_data_feed_authorize_v3():
         "Authorization": f"Bearer {ACCESS_TOKEN}"
     }
     url = "https://api.upstox.com/v3/feed/market-data-feed/authorize"
-    return requests.get(url, headers=headers).json()
+    return requests.get(url, headers=headers, timeout=10).json()
 
 
 def decode_protobuf(buffer):
@@ -63,63 +63,79 @@ def decode_protobuf(buffer):
 
 
 # ==========================================
-# ASYNC WEBSOCKET
+# ASYNC WEBSOCKET (WITH KEEPALIVE + RECONNECT)
 # ==========================================
 async def fetch_market_data():
     ssl_context = ssl.create_default_context()
     ssl_context.check_hostname = False
     ssl_context.verify_mode = ssl.CERT_NONE
 
-    auth = get_market_data_feed_authorize_v3()
-    ws_url = auth["data"]["authorized_redirect_uri"]
+    while True:  # 🔁 reconnect loop
+        try:
+            auth = get_market_data_feed_authorize_v3()
+            ws_url = auth["data"]["authorized_redirect_uri"]
 
-    async with websockets.connect(ws_url, ssl=ssl_context) as websocket:
-        print("✅ WebSocket connected")
+            async with websockets.connect(
+                ws_url,
+                ssl=ssl_context,
+                ping_interval=20,
+                ping_timeout=20,
+                close_timeout=10
+            ) as websocket:
 
-        sub_payload = {
-            "guid": "live-dashboard",
-            "method": "sub",
-            "data": {
-                "mode": "option_greeks",
-                "instrumentKeys": [EQ_KEY, FO_1, FO_2]
-            }
-        }
+                print("✅ WebSocket connected")
 
-        await websocket.send(json.dumps(sub_payload).encode())
+                sub_payload = {
+                    "guid": "live-dashboard",
+                    "method": "sub",
+                    "data": {
+                        "mode": "option_greeks",
+                        "instrumentKeys": [EQ_KEY, FO_1, FO_2]
+                    }
+                }
 
-        while True:
-            msg = await websocket.recv()
-            decoded = decode_protobuf(msg)
-            data = MessageToDict(decoded)
+                await websocket.send(json.dumps(sub_payload).encode())
 
-            if "feeds" not in data:
-                continue
+                while True:
+                    msg = await websocket.recv()
+                    decoded = decode_protobuf(msg)
+                    data = MessageToDict(decoded)
 
-            ts = float(datetime.now(timezone.utc).timestamp())
+                    if "feeds" not in data:
+                        continue
 
-            for ins, feed in data["feeds"].items():
-                flwg = feed.get("firstLevelWithGreeks", {})
+                    ts = float(datetime.now(timezone.utc).timestamp())
 
-                if ins == EQ_KEY:
-                    try:
-                        price = float(flwg["ltpc"]["ltp"])
-                        data_queue.put((ts, "EQ", price))
-                    except Exception:
-                        pass
+                    for ins, feed in data["feeds"].items():
+                        flwg = feed.get("firstLevelWithGreeks", {})
 
-                elif ins == FO_1:
-                    oi = flwg.get("oi")
-                    if oi is not None:
-                        data_queue.put((ts, "FO1", float(oi)))
+                        if ins == EQ_KEY:
+                            try:
+                                price = float(flwg["ltpc"]["ltp"])
+                                data_queue.put((ts, "EQ", price))
+                            except Exception:
+                                pass
 
-                elif ins == FO_2:
-                    oi = flwg.get("oi")
-                    if oi is not None:
-                        data_queue.put((ts, "FO2", float(oi)))
+                        elif ins == FO_1:
+                            oi = flwg.get("oi")
+                            if oi is not None:
+                                data_queue.put((ts, "FO1", float(oi)))
+
+                        elif ins == FO_2:
+                            oi = flwg.get("oi")
+                            if oi is not None:
+                                data_queue.put((ts, "FO2", float(oi)))
+
+        except Exception as e:
+            print(f"⚠ WebSocket error: {e}")
+            print("🔁 Reconnecting in 5 seconds...")
+            await asyncio.sleep(5)
 
 
 def start_ws():
-    asyncio.run(fetch_market_data())
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(fetch_market_data())
 
 
 # ==========================================
@@ -134,13 +150,12 @@ class LiveDashboard(QMainWindow):
 
         self.max_points = 2000
 
-        # time-series
         self.time = []
         self.eq_price = []
         self.fo1_oi = []
         self.fo2_oi = []
 
-        # last known values (IMPORTANT: np.nan, NOT None)
+        # IMPORTANT: numeric defaults
         self.last_eq = np.nan
         self.last_fo1 = np.nan
         self.last_fo2 = np.nan
@@ -170,11 +185,9 @@ class LiveDashboard(QMainWindow):
 
         self.setCentralWidget(central)
 
-        # UI refresh timer
         self.timer = QTimer()
         self.timer.timeout.connect(self.update_plot)
-        self.timer.start(50)   # ~20 FPS
-
+        self.timer.start(50)   # UI refresh ~20 FPS
 
     def update_plot(self):
         updated = False
@@ -191,7 +204,7 @@ class LiveDashboard(QMainWindow):
             elif typ == "FO2":
                 self.last_fo2 = float(val)
 
-            # forward-fill (NUMERIC ONLY)
+            # forward-fill
             self.eq_price.append(self.last_eq)
             self.fo1_oi.append(self.last_fo1)
             self.fo2_oi.append(self.last_fo2)
