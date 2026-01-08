@@ -28,9 +28,9 @@ import MarketDataFeedV3_pb2 as pb
 # ==========================================
 # CONFIG
 # ==========================================
-EQ_KEY = "NSE_EQ|INE066F01020"
-FO_1 = "NSE_FO|91614"
-FO_2 = "NSE_FO|91611"
+EQ_KEY = "NSE_EQ|INE692A01016"
+FO_1 = "NSE_FO|148243"
+FO_2 = "NSE_FO|148240"
 
 load_dotenv()
 ACCESS_TOKEN = os.getenv("token")

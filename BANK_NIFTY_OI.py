@@ -69,8 +69,9 @@ async def fetch_market_data():
             "guid": "someguid",
             "method": "sub",
             "data": {
-                "mode": "ltpc",
-                "instrumentKeys": ['NSE_EQ|INE466L01038', 'NSE_EQ|INE117A01022', 'NSE_EQ|INE931S01010', 'NSE_EQ|INE423A01024', 'NSE_EQ|INE364U01010', 'NSE_EQ|INE742F01042', 'NSE_EQ|INE674K01013', 'NSE_EQ|INE540L01014', 'NSE_EQ|INE371P01015', 'NSE_EQ|INE079A01024', 'NSE_EQ|INE732I01013', 'NSE_EQ|INE702C01027', 'NSE_EQ|INE437A01024', 'NSE_EQ|INE208A01029', 'NSE_EQ|INE021A01026', 'NSE_EQ|INE006I01046', 'NSE_EQ|INE949L01017', 'NSE_EQ|INE406A01037', 'NSE_EQ|INE192R01011', 'NSE_EQ|INE238A01034', 'NSE_EQ|INE917I01010', 'NSE_EQ|INE296A01032', 'NSE_EQ|INE918I01026', 'NSE_EQ|INE545U01014']
+                "mode": "option_greeks",
+                # "instrumentKeys": ['NSE_EQ|INE466L01038', 'NSE_EQ|INE117A01022', 'NSE_EQ|INE931S01010', 'NSE_EQ|INE423A01024', 'NSE_EQ|INE364U01010', 'NSE_EQ|INE742F01042', 'NSE_EQ|INE674K01013', 'NSE_EQ|INE540L01014', 'NSE_EQ|INE371P01015', 'NSE_EQ|INE079A01024', 'NSE_EQ|INE732I01013', 'NSE_EQ|INE702C01027', 'NSE_EQ|INE437A01024', 'NSE_EQ|INE208A01029', 'NSE_EQ|INE021A01026', 'NSE_EQ|INE006I01046', 'NSE_EQ|INE949L01017', 'NSE_EQ|INE406A01037', 'NSE_EQ|INE192R01011', 'NSE_EQ|INE238A01034', 'NSE_EQ|INE917I01010', 'NSE_EQ|INE296A01032', 'NSE_EQ|INE918I01026', 'NSE_EQ|INE545U01014']
+                "instrumentKeys":["NSE_FO|134090"]
             }
         }
 
@@ -90,9 +91,9 @@ async def fetch_market_data():
             print("\n\n\n\n\n**************************************************************\n\n\n")
             # print(data_dict)
             try:
-                feeds = data_dict['feeds']
-                for k,v in feeds.items():
-                    print(k,":",v['ltpc']['ltp'])
+                # feeds = data_dict['feeds']
+                # for k,v in feeds.items():
+                #     print(k,":",v['ltpc']['ltp'])
         
 
                 # oi = feed_data['firstLevelWithGreeks']['oi']
@@ -100,7 +101,7 @@ async def fetch_market_data():
                 # print("Instrument:", instrument_key)
                 # print("OI:", oi)
 
-                # print(json.dumps(data_dict))
+                print(json.dumps(data_dict))
             except:
                 continue
 

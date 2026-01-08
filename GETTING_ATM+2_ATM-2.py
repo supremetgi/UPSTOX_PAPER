@@ -7,9 +7,7 @@ import time
 from dotenv import load_dotenv
 import os
 
-# ===============================
-# ENV
-# ===============================
+
 load_dotenv()
 TOKEN = os.getenv("token")
 
@@ -19,6 +17,10 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
+
+
+
+
 API_URL = "https://api.upstox.com/v3/market-quote/ltp?instrument_key="
 CSV_PATH = "companies_only.csv"
 
@@ -26,7 +28,6 @@ CSV_PATH = "companies_only.csv"
 # RATE LIMIT CONFIG
 # ===============================
 MAX_CONCURRENT_REQUESTS = 10
-# REQUESTS_PER_SECOND = 8
 REQUESTS_PER_SECOND = 40
 RETRY_LIMIT = 6
 
@@ -37,6 +38,10 @@ last_request_ts = 0.0
 # ===============================
 # HARD RATE LIMITER
 # ===============================
+
+
+
+
 async def rate_limit():
     global last_request_ts
     async with rate_lock:

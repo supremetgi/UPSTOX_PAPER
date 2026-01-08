@@ -102,7 +102,7 @@ df_out.to_csv("available_to_trade.csv")
 
 
 companies_df = df_out[~df_out["underlying_key"].str.contains("NSE_INDEX", na=False)]
-# companies_df = df_out[~df_out["name"].str.contains("RELIANCE", na=False)]
+companies_df = companies_df[~companies_df["name"].str.contains("RELIANCE", na=False)]
 
 
 companies_df.to_csv("companies_only.csv", index=False)
